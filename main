@@ -1,0 +1,303 @@
+
+//通过按板子KEY键切换模式，默认循迹模式，LED1,LED2状态指示灯灭，按一次切换到避障模式，LDE1亮，LED2灭
+//再按一次切换到红外遥控模式LED2亮，LED1灭。
+//黑线贴3厘米宽，否则小车摆动很厉害
+#include <reg52.h>//51头文件
+#include <QX_A11.h>//QX_A11智能小车配置文件
+unsigned char	pwm_val_left,pwm_val_right;	//中间变量，用户请勿修改。
+unsigned char pwm_left,pwm_right;			//定义PWM输出高电平的时间的变量。用户操作PWM的变量。
+unsigned char IRtime; 		//检测红外高电平持续时间（脉宽）
+unsigned char IRcord[4];    //此数组用于储存分离出来的4个字节的数据（用户码2个字节+键值码2个字节）
+unsigned char IRdata[33];   //此数组用于储存红外的33位数据（第一位为引导码用户码16+键值码16）
+bit IRpro_ok, IRok;  //第一个用于红外接收4个字节完毕。IRok用为检测脉宽完毕
+#define		PWM_DUTY		200			//定义PWM的周期，数值为定时器0溢出周期，假如定时器溢出时间为100us，则PWM周期为20ms。
+#define		PWM_HIGH_MIN	10			//限制PWM输出的最小占空比。用户请勿修改。
+#define		PWM_HIGH_MAX	PWM_DUTY	//限制PWM输出的最大占空比。用户请勿修改。
+
+void Timer0_Init(void); //定时器0初始化
+void Timer1_Init(void); //定时器1初始化
+void EXTI0_Init(void);//外部中断0初始化
+void QXMBOT_LoadPWM(void);//装入PWM输出值 
+void Delay_Ms(unsigned int ms);//毫秒级延时函数
+void forward(unsigned char LeftSpeed,unsigned char RightSpeed);//QX_A11智能小车前进 
+void left_run(unsigned char LeftSpeed,unsigned char RightSpeed);//QX_A11智能小车左转  
+void right_run(unsigned char LeftSpeed,unsigned char RightSpeed);//QX_A11智能小车右转
+void back_run(unsigned char LeftSpeed,unsigned char RightSpeed);//QX_A11智能小车后退
+void stop(void);//QX_A11智能小车停车
+void Tracking(void);//黑线循迹
+int TrackingPlus(unsigned char n1,n2);
+
+/*主函数*/     
+void main(void)
+{
+  int n1=0;
+	int n2=0;
+	int n3=0;
+	int n4=0;
+	EA_on;//开总中断
+	Timer0_Init();//定时0初始化
+	Timer1_Init();//定时1初始化
+	EXTI0_Init();//外部中断0初始化
+	while(1)
+	{
+		Delay_Ms(3);
+		n3,n4 = TrackingPlus(n1,n2);
+		n1 = n3;
+		n2 = n4;
+		//Tracking();
+	}	
+}
+
+/*********************************************
+QX_A11智能小车前进
+入口参数：LeftSpeed，RightSpeed
+出口参数: 无
+说明：LeftSpeed，RightSpeed分别设置左右车轮转速
+**********************************************/
+void forward(unsigned char LeftSpeed,unsigned char RightSpeed)
+{
+	pwm_left = LeftSpeed,pwm_right =  RightSpeed;//设置速度
+	left_motor_go; //左电机前进
+	right_motor_go; //右电机前进
+}
+/*小车左转*/
+/*********************************************
+QX_A11智能小车左转
+入口参数：LeftSpeed，RightSpeed
+出口参数: 无
+说明：LeftSpeed，RightSpeed分别设置左右车轮转速
+**********************************************/
+void left_run(unsigned char LeftSpeed,unsigned char RightSpeed)
+{
+	pwm_left = LeftSpeed,pwm_right =  RightSpeed;//设置速度
+	left_motor_back; //左电机后退
+	right_motor_go; //右电机前进	
+}
+
+/*********************************************
+QX_A11智能小车右转
+入口参数：LeftSpeed，RightSpeed
+出口参数: 无
+说明：LeftSpeed，RightSpeed分别设置左右车轮转速
+**********************************************/
+void right_run(unsigned char LeftSpeed,unsigned char RightSpeed)
+{
+	pwm_left = LeftSpeed,pwm_right =  RightSpeed;//设置速度
+	right_motor_back;//右电机后退
+	left_motor_go;    //左电机前进
+}
+/*********************************************
+QX_A11智能小车后退
+入口参数：LeftSpeed，RightSpeed
+出口参数: 无
+说明：LeftSpeed，RightSpeed分别设置左右车轮转速
+**********************************************/
+void back_run(unsigned char LeftSpeed,unsigned char RightSpeed)
+{
+	pwm_left = LeftSpeed,pwm_right =  RightSpeed;//设置速度
+	right_motor_back;//右电机后退
+	left_motor_back; //左电机后退
+}
+/*********************************************
+QX_A11智能小车停车
+入口参数：无
+出口参数: 无
+说明：QX_A11智能小车停车
+**********************************************/
+void stop(void)
+{
+	left_motor_stops;
+	right_motor_stops;
+}
+/*********************************************
+QX_A11智能小车PWM输出
+入口参数：无
+出口参数: 无
+说明：装载PWM输出,如果设置全局变量pwm_left,pwm_right分别配置左右输出高电平时间
+**********************************************/
+void QXMBOT_LoadPWM(void)
+{
+	if(pwm_left > PWM_HIGH_MAX)		pwm_left = PWM_HIGH_MAX;	//如果左输出写入大于最大占空比数据，则强制为最大占空比。
+	if(pwm_left < PWM_HIGH_MIN)		pwm_left = PWM_HIGH_MIN;	//如果左输出写入小于最小占空比数据，则强制为最小占空比。
+	if(pwm_right > PWM_HIGH_MAX)	pwm_right = PWM_HIGH_MAX;	//如果右输出写入大于最大占空比数据，则强制为最大占空比。
+	if(pwm_right < PWM_HIGH_MIN)	pwm_right = PWM_HIGH_MIN;	//如果右输出写入小于最小占空比数据，则强制为最小占空比。
+	if(pwm_val_left<=pwm_left)		Left_moto_pwm = 1;  //装载左PWM输出高电平时间
+	else Left_moto_pwm = 0; 						    //装载左PWM输出低电平时间
+	if(pwm_val_left>=PWM_DUTY)		pwm_val_left = 0;	//如果左对比值大于等于最大占空比数据，则为零
+
+	if(pwm_val_right<=pwm_right)	Right_moto_pwm = 1; //装载右PWM输出高电平时间
+	else Right_moto_pwm = 0; 							//装载右PWM输出低电平时间
+	if(pwm_val_right>=PWM_DUTY)		pwm_val_right = 0;	//如果右对比值大于等于最大占空比数据，则为零
+}
+
+void turn(unsigned char n,mode,v)
+{
+	float v_hig;
+  float v_low;
+	v_hig = v + n;
+	v_low = v - n;
+	if (mode == 0) //为0，左转
+	{
+		if (v_low >= 0)
+		{
+			left_run(v_low,v_hig);
+		}
+		if (v_low < 0)
+		{
+			left_run(-1*v_low,v_hig);//左转
+		}
+	}
+	if (mode == 1) //为1，右转
+	{
+		if (v_low >= 0)
+		{
+			right_run(v_hig,v_low);
+		}
+		if (v_low < 0)
+		{
+			right_run(v_hig,-1*v_low);//左转
+		}
+	}
+}
+
+//turn(unsigned char n,mode,v)
+int TrackingPlus(unsigned char n1,n2)
+{
+		//为0 没有识别到黑线 为1识别到黑线
+	char data1,data2 = left_led1,data3 = right_led1;
+	data1 = data2*10+data3;
+	
+	if(data1 == 11) //在黑线上，前进
+	{
+	n1 = 0;
+	n2 = 0;
+	forward(160,160);//前进
+	}
+	else
+	{
+		if(data1 == 10)//小幅偏右，左转
+		{
+			n1 = n1+1;
+			n2 = 0;
+			turn(20+2*n1,0,140);//左转
+		}
+		if(data1 == 1)//小幅偏左，右转
+		{ 
+			n2 = n2+1;
+			n1 = 0;
+			turn(20+2*n2,1,140);//右转
+		}
+		if(data1 == 0)//大幅偏左或偏右，已脱离轨道
+		{
+			n1 = 0;
+			n2 = 0;
+			stop();	
+		}
+	}
+	return n1;
+}
+
+
+
+//红外循迹
+void Tracking()
+{
+	//为0 没有识别到黑线 为1识别到黑线
+	char data1,data2 = left_led1,data3 = right_led1;
+	data1 = data2*10+data3;
+	if(data1 == 11)//在黑线上，前进
+	{
+		forward(80,80);//前进
+	}
+	else
+	{
+	 	if(data1 == 10)//小幅偏右，左转
+		{
+			left_run(80,80);//左转
+		}
+		if(data1 == 1)//小幅偏左，右转
+		{
+			right_run(80,80);//右转
+		}
+		if(data1 == 0)//大幅偏左或偏右，已脱离轨道
+		{
+			stop();	
+		}
+	}
+}
+
+/*====================================
+函数：void Delay_Ms(INT16U ms)
+参数：ms，毫秒延时形参
+描述：12T 51单片机自适应主时钟毫秒级延时函数
+====================================*/
+void Delay_Ms(unsigned int ms)
+{
+     unsigned int i;
+	 do{
+	      i = MAIN_Fosc / 96000; 
+		  while(--i);   //96T per loop
+     }while(--ms);
+}
+/********************* Timer0初始化************************/
+void Timer0_Init(void)
+{
+	TMOD |= 0x02; //定时器0工作方式2，8位自动重装
+	TH0 = 0x00;  //高8位装入0那么定时器溢出一次的时间是256个机器周期
+	TL0 = 0x00;
+	ET0 = 1;	   //定时器0中断
+	TR0 = 1;     //启动定时器0	
+}
+/********************* Timer0初始化************************/
+void Timer1_Init(void)
+{
+	TMOD |= 0x20;//定时器1，8位自动重装模块
+	TH1 = 164;
+	TL1 = 164;//11.0592M晶振，12T溢出时间约等于100微秒
+	TR1 = 1;//启动定时器1
+	ET1 = 1;//允许定时器1中断	
+}
+/********************* 外部中断0初始化************************/
+void EXTI0_Init(void)
+{
+	IT0 = 1;	   //设置外部中断0为跳沿触发方式，来一个下降沿触发一次
+	EX0 = 1;	   //启动外部中断0	
+}
+/********************* 外部中断0中断函数************************/
+void QXMBOT_int0() interrupt 0	  		//定义外部中断0
+{
+	static unsigned char i;	 			//	声明静态变量（在跳出函数后在回来执行的时候不会丢失数值）i用于把33次高电平的持续时间存入IRdata
+	static bit startflag;		//开始储存脉宽标志位
+	if(startflag)	 			//开始接收脉宽检测
+	{
+		if( (IRtime < 53) && (IRtime >= 32) ) /*判断是否是引导码，底电平9000us+高4500us	
+		这个自己可以算我以11.0592来算了NEC协议的引导码低8000-10000+高4000-5000 
+		如果已经接收了引导码那么i不会被置0就会开始依次存入脉宽*/
+			i = 0;				 //如果是引导码那么执行i=0把他存到IRdata的第一个位
+		IRdata[i] = IRtime;  		 //以T0的溢出次数来计算脉宽，把这个时间存到数组里面到后面判断
+		IRtime = 0;				 //计数清零，下一个下降沿的时候在存入脉宽
+		i++; 					 //计数脉宽存入的次数
+		if(i == 33) 				 //如果存入34次 数组的下标是从0开始i等于33表示执行了34次
+		{
+		 	IRok = 1;				 //那么表示脉宽检测完毕
+			i = 0; 				 //把脉宽计数清零准备下次存入
+		}
+	}
+	else		  
+	{
+		IRtime = 0; 				 //引导码开始进入把脉宽计数清零开始计数
+		startflag = 1;			 //开始处理标志位置1
+	}
+}
+/********************* Timer0中断函数************************/
+void timer0_int (void) interrupt 1
+{
+	 IRtime++; 			   //检测脉宽，1次为278us
+}
+/********************* Timer0中断函数************************/
+void timer1_int (void) interrupt 3
+{
+	 pwm_val_left++;
+	 pwm_val_right++;
+	 QXMBOT_LoadPWM();//装载PWM输出
+}	
